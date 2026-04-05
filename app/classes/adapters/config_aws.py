@@ -19,6 +19,39 @@ _TMP_CONFIG = "/tmp/config.ini" if os.path.exists(
 CONFIGFILE = _TMP_CONFIG
 
 
+def _strip_comments(text):
+    """Strip # comments from JSON-like text, respecting quoted strings."""
+    lines = []
+    for line in text.splitlines():
+        cleaned = []
+        in_string = False
+        i = 0
+        while i < len(line):
+            c = line[i]
+            if c == '\\' and in_string:
+                cleaned.append(c)
+                if i + 1 < len(line):
+                    i += 1
+                    cleaned.append(line[i])
+            elif c == '"':
+                in_string = not in_string
+                cleaned.append(c)
+            elif c == '#' and not in_string:
+                break  # rest of line is a comment
+            else:
+                cleaned.append(c)
+            i += 1
+        lines.append(''.join(cleaned))
+    return '\n'.join(lines)
+
+
+def _load_json(file_path):
+    """Load JSON from a file that may contain # comments."""
+    with open(file_path, "r", encoding="utf-8") as file:
+        raw = file.read()
+    return json.loads(_strip_comments(raw))
+
+
 def _ensure_config():
     """Copy the bundled config to /tmp on first Lambda invocation."""
     if CONFIGFILE == _BUNDLED_CONFIG:
@@ -57,18 +90,16 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
 
     def __get_parameter__(self, parameter, default=''):
         _ensure_config()
-        with open(CONFIGFILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        data = _load_json(CONFIGFILE)
         return data.get(parameter, default)
 
     def __set_parameter__(self, parameter, value, value_type):
         _ensure_config()
-        with open(CONFIGFILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
+        data = _load_json(CONFIGFILE)
         if value_type == "String":
             data[parameter] = str(value)
         else:
             data[parameter] = value
         with open(CONFIGFILE, "w", encoding="utf-8") as file:
-            json.dump(data, file)
+            json.dump(data, file, indent=2, ensure_ascii=False)
         return True

@@ -6,8 +6,12 @@ Refreshes the queue playlist with new/unplayed episodes and starts playback.
 
 from datetime import datetime, timedelta, timezone
 from time import sleep
+from zoneinfo import ZoneInfo
 import requests as _req
+import urllib3
 from app.classes.spotify import Spotify
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _TOKEN_URL = "https://accounts.spotify.com/api/token"
 _API_BASE = "https://api.spotify.com/v1"
@@ -73,6 +77,8 @@ class SpotifyAPI(Spotify):
             if window_hours is not None else None
         )
         for episode in resp.json().get('items', []):
+            if episode is None:
+                continue
             if episode.get('resume_point', {}).get('fully_played'):
                 continue
             if cutoff:
@@ -137,27 +143,50 @@ class SpotifyAPI(Spotify):
         podcasts = self.config.spotify.get('podcasts', [])
         device_id = self.config.spotify['device_id']
 
+        today = datetime.now(ZoneInfo('Europe/Madrid')
+                             ).weekday()  # 0=Mon … 6=Sun
+
         uris = []
+        attempted = []
+        added = []
         for podcast in podcasts:
-            uri = self._get_episode_uri(
-                podcast['id'], podcast.get('window_hours'))
+            show_id = podcast['id']
+            days = podcast.get('days')
+            if days is not None and today not in days:
+                continue
+            label = podcast.get('name') or show_id
+            attempted.append(label)
+            uri = self._get_episode_uri(show_id, podcast.get('window_hours'))
             if uri:
                 uris.append(uri)
+                added.append(label)
 
         if not uris:
-            return {'is_ok': False, 'episodes_added': 0,
-                    'response': 'No new unplayed episodes found'}
+            return {
+                'is_ok': False,
+                'episodes_added': 0,
+                'attempted': attempted,
+                'added': added,
+                'response': 'No new unplayed episodes found',
+            }
 
         # Persist URIs so play_stored_queue can play them later without rebuilding
         self.config.set_spotify_queue(uris)
 
         if not play:
-            return {'is_ok': True, 'episodes_added': len(uris),
-                    'response': 'Queue built and saved. Call play_music?play=true to play.'}
+            return {
+                'is_ok': True,
+                'episodes_added': len(uris),
+                'attempted': attempted,
+                'added': added,
+                'response': 'Queue built and saved. Call play_music?play=true to play.',
+            }
 
         play_resp = self._play(uris, device_id)
         return {
             'is_ok': play_resp.ok,
             'status_code': play_resp.status_code,
-            'episodes_added': len(uris)
+            'episodes_added': len(uris),
+            'attempted': attempted,
+            'added': added,
         }
