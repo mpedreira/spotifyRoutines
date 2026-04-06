@@ -122,7 +122,8 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
             try:
                 ssm = _get_ssm_client()
                 if ssm:
-                    response = ssm.get_parameter(Name=parameter, WithDecryption=True)
+                    response = ssm.get_parameter(
+                        Name=parameter, WithDecryption=True)
                     raw = response['Parameter']['Value']
                     # Try to parse as JSON (covers lists and dicts stored as JSON strings)
                     try:
@@ -130,9 +131,11 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
                     except (json.JSONDecodeError, ValueError):
                         return raw
             except ssm.exceptions.ParameterNotFound:  # pylint: disable=no-member
-                logger.warning("SSM parameter '%s' not found, falling back to local config", parameter)
+                logger.warning(
+                    "SSM parameter '%s' not found, falling back to local config", parameter)
             except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("SSM get_parameter failed for '%s': %s. Falling back to local config", parameter, exc)
+                logger.warning(
+                    "SSM get_parameter failed for '%s': %s. Falling back to local config", parameter, exc)
 
         _ensure_config()
         data = _load_json(CONFIGFILE)
@@ -143,7 +146,8 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
             try:
                 ssm = _get_ssm_client()
                 if ssm:
-                    ssm_value = json.dumps(value, ensure_ascii=False) if not isinstance(value, str) else value
+                    ssm_value = json.dumps(value, ensure_ascii=False) if not isinstance(
+                        value, str) else value
                     ssm.put_parameter(
                         Name=parameter,
                         Value=ssm_value,
@@ -152,7 +156,8 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
                     )
                     return True
             except Exception as exc:  # pylint: disable=broad-except
-                logger.warning("SSM put_parameter failed for '%s': %s. Falling back to local config", parameter, exc)
+                logger.warning(
+                    "SSM put_parameter failed for '%s': %s. Falling back to local config", parameter, exc)
 
         _ensure_config()
         data = _load_json(CONFIGFILE)
