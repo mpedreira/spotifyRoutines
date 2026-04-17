@@ -3,7 +3,7 @@ This file contains the endpoint to build and play the podcast queue via Spotify.
 """
 # pylint: disable=E0401,R0801,E0611
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from app.classes.adapters.config_aws import ConfigAWS
 from app.classes.adapters.spotify_api import SpotifyAPI
 
@@ -28,5 +28,18 @@ def play_music(play: bool = True):
     Returns:
         dict: Result with is_ok, episodes_added and status_code
     """
-    config_instance = ConfigAWS()
+    try:
+        config_instance = ConfigAWS()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SpotifyAPI(config_instance).build_and_play_queue(play=play)
+
+
+@router.post("/{user}")
+def play_music_by_user(user: str, play: bool = True):
+    """Build and optionally play queue for the provided user profile."""
+    try:
+        config_instance = ConfigAWS(user=user)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return SpotifyAPI(config_instance).build_and_play_queue(play=play)

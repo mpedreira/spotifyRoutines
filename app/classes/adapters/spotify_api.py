@@ -7,6 +7,7 @@ Refreshes the queue playlist with new/unplayed episodes and starts playback.
 from datetime import datetime, timedelta, timezone
 from time import sleep
 from zoneinfo import ZoneInfo
+import random
 import requests as _req
 import urllib3
 from app.classes.spotify import Spotify
@@ -109,6 +110,48 @@ class SpotifyAPI(Spotify):
         )
         return resp.ok
 
+    def _get_playlist_track_uris(self, playlist_id, tracks_limit=None):
+        """Return a list of track URIs from a Spotify playlist."""
+        uris = []
+        offset = 0
+        limit = 50
+        max_items = tracks_limit if isinstance(tracks_limit, int) and tracks_limit > 0 else None
+
+        while True:
+            page_limit = limit
+            if max_items is not None:
+                remaining = max_items - len(uris)
+                if remaining <= 0:
+                    break
+                page_limit = min(limit, remaining)
+
+            resp = _req.get(
+                f"{_API_BASE}/playlists/{playlist_id}/tracks",
+                headers=self._headers(),
+                params={'market': 'ES', 'limit': page_limit, 'offset': offset},
+                verify=False, timeout=10,
+            )
+            items = resp.json().get('items', [])
+            if not items:
+                break
+
+            for item in items:
+                track = (item or {}).get('track') or {}
+                track_id = track.get('id')
+                if track_id:
+                    uris.append(f"spotify:track:{track_id}")
+                if max_items is not None and len(uris) >= max_items:
+                    break
+
+            if max_items is not None and len(uris) >= max_items:
+                break
+
+            if not resp.json().get('next'):
+                break
+            offset += len(items)
+
+        return uris
+
     def _play(self, uris, device_id):
         """Transfer playback to device and start playing the given episode URIs."""
         # Transfer playback to device first (wakes it up if inactive)
@@ -140,7 +183,14 @@ class SpotifyAPI(Spotify):
             dict: Result with is_ok, status_code and episodes_added
         """
         self._refresh_token()
-        podcasts = self.config.spotify.get('podcasts', [])
+        sources = self.config.spotify.get('sources')
+        if sources is None:
+            sources = []
+            for podcast in self.config.spotify.get('podcasts', []):
+                source = dict(podcast)
+                source['type'] = 'podcast'
+                source.setdefault('active', True)
+                sources.append(source)
         device_id = self.config.spotify['device_id']
 
         today = datetime.now(ZoneInfo('Europe/Madrid')
@@ -149,14 +199,35 @@ class SpotifyAPI(Spotify):
         uris = []
         attempted = []
         added = []
-        for podcast in podcasts:
-            show_id = podcast['id']
-            days = podcast.get('days')
+        for source in sources:
+            if not source.get('active', True):
+                continue
+
+            source_type = str(source.get('type', 'podcast')).lower()
+            source_id = source.get('id')
+            if not source_id:
+                continue
+
+            days = source.get('days')
             if days is not None and today not in days:
                 continue
-            label = podcast.get('name') or show_id
+
+            label = source.get('name') or source_id
             attempted.append(label)
-            uri = self._get_episode_uri(show_id, podcast.get('window_hours'))
+
+            if source_type == 'playlist':
+                playlist_uris = self._get_playlist_track_uris(
+                    source_id,
+                    tracks_limit=source.get('tracks_limit'),
+                )
+                if source.get('shuffle', False):
+                    random.shuffle(playlist_uris)
+                if playlist_uris:
+                    uris.extend(playlist_uris)
+                    added.append(label)
+                continue
+
+            uri = self._get_episode_uri(source_id, source.get('window_hours'))
             if uri:
                 uris.append(uri)
                 added.append(label)
