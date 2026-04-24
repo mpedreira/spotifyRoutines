@@ -253,6 +253,37 @@ class TestBuildAndPlayQueueWithEpisodes:
         assert result.get('device_offline') is not True
 
 
+class TestPlayRetry:
+    def test_play_retries_once_on_device_not_found(self):
+        ok_resp = MagicMock()
+        ok_resp.ok = True
+        ok_resp.status_code = 204
+
+        fail_resp = MagicMock()
+        fail_resp.ok = False
+        fail_resp.status_code = 404
+        fail_resp.json.return_value = {'error': {'message': 'Device not found'}}
+        fail_resp.text = 'Device not found'
+
+        api = _make_api(sources=[])
+        api._access_token = 'fake'
+
+        call_count = {'n': 0}
+
+        def fake_put(url, **kwargs):
+            if '/me/player/play' in url:
+                call_count['n'] += 1
+                return fail_resp if call_count['n'] == 1 else ok_resp
+            return MagicMock(ok=True)
+
+        with patch('app.classes.adapters.spotify_api._req.put', side_effect=fake_put), \
+                patch('app.classes.adapters.spotify_api.sleep'):
+            result = api._play(['spotify:episode:x'], 'dev1')
+
+        assert result.ok is True
+        assert call_count['n'] == 2
+
+
 class TestTokenRefreshFailures:
     def test_returns_meaningful_response_when_refresh_fails(self):
         api = _make_api(sources=[])

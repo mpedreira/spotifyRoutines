@@ -178,23 +178,37 @@ class SpotifyAPI(Spotify):
 
         return uris
 
-    def _play(self, uris, device_id):
-        """Transfer playback to device and start playing the given episode URIs."""
-        # Transfer playback to device first (wakes it up if inactive)
-        _req.put(
+    def _play(self, uris, device_id, _retry=True):
+        """Transfer playback to device and start playing the given episode URIs.
+
+        Combines the transfer and play into a single call (play:true on transfer).
+        If Spotify still reports device-not-found, retries once after a short wait.
+        """
+        # Ask Spotify to transfer AND start playing in one shot
+        transfer_resp = _req.put(
             f"{_API_BASE}/me/player",
             headers=self._headers(json_content=True),
-            json={'device_ids': [device_id], 'play': False},
+            json={'device_ids': [device_id], 'play': True},
             verify=False, timeout=10
         )
-        sleep(2)
-        return _req.put(
+        # After transfer, issue explicit play with the desired URIs
+        sleep(3)
+        play_resp = _req.put(
             f"{_API_BASE}/me/player/play",
             headers=self._headers(json_content=True),
             params={'device_id': device_id},
             json={'uris': uris},
             verify=False, timeout=10
         )
+
+        # If device still not found, wait and retry once
+        if not play_resp.ok and play_resp.status_code == 404 and _retry:
+            detail = self._response_detail(play_resp).lower()
+            if 'device' in detail:
+                sleep(4)
+                return self._play(uris, device_id, _retry=False)
+
+        return play_resp
 
     def build_and_play_queue(self, play=True):
         """
