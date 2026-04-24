@@ -40,7 +40,33 @@ class SpotifyAPI(Spotify):
             'client_id': self.config.spotify['client_id'],
             'client_secret': self.config.spotify['client_secret'],
         }, verify=False, timeout=10)
-        self._access_token = resp.json()['access_token']
+        payload = resp.json() if resp.content else {}
+        self._access_token = payload.get('access_token')
+        if not self._access_token:
+            error = (payload or {}).get('error_description') or (payload or {}).get('error') or 'Unable to refresh Spotify token'
+            raise ValueError(error)
+
+    @staticmethod
+    def _response_detail(resp):
+        """Return a readable error detail from a Spotify API response."""
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {}
+
+        if isinstance(payload, dict):
+            spotify_error = payload.get('error')
+            if isinstance(spotify_error, dict):
+                return spotify_error.get('message') or str(spotify_error)
+            if spotify_error:
+                return str(spotify_error)
+
+        return (resp.text or '').strip() or f"HTTP {resp.status_code}"
+
+    def _sync_queue_playlist(self, playlist_id, uris):
+        """Best-effort sync of generated queue into a Spotify playlist."""
+        self._clear_playlist(playlist_id)
+        return self._add_to_playlist(playlist_id, uris)
 
     def _headers(self, json_content=False):
         """Return auth headers, optionally with Content-Type: application/json."""
@@ -182,7 +208,15 @@ class SpotifyAPI(Spotify):
         Returns:
             dict: Result with is_ok, status_code and episodes_added
         """
-        self._refresh_token()
+        try:
+            self._refresh_token()
+        except (ValueError, _req.RequestException) as exc:
+            return {
+                'is_ok': False,
+                'episodes_added': 0,
+                'response': f'Token refresh failed: {exc}',
+            }
+
         sources = self.config.spotify.get('sources')
         if sources is None:
             sources = []
@@ -241,8 +275,9 @@ class SpotifyAPI(Spotify):
                 'response': 'No new unplayed episodes found',
             }
 
-        # Persist URIs so play_stored_queue can play them later without rebuilding
+        # Persist URIs in config so the last generated queue is always available.
         self.config.set_spotify_queue(uris)
+        queue_playlist_id = self.config.spotify.get('queue_playlist_id')
 
         if not play:
             return {
@@ -253,11 +288,38 @@ class SpotifyAPI(Spotify):
                 'response': 'Queue built and saved. Call play_music?play=true to play.',
             }
 
-        play_resp = self._play(uris, device_id)
+        try:
+            play_resp = self._play(uris, device_id)
+        except _req.RequestException as exc:
+            play_resp = None
+            play_detail = str(exc)
+        else:
+            play_detail = self._response_detail(play_resp) if not play_resp.ok else ''
+
+        queue_synced = None
+        if (play_resp is None or not play_resp.ok) and queue_playlist_id:
+            try:
+                queue_synced = self._sync_queue_playlist(queue_playlist_id, uris)
+            except _req.RequestException:
+                queue_synced = False
+
+        if play_resp is None:
+            return {
+                'is_ok': False,
+                'status_code': 503,
+                'episodes_added': len(uris),
+                'attempted': attempted,
+                'added': added,
+                'response': f'Playback request failed: {play_detail}',
+                'queue_playlist_synced': queue_synced,
+            }
+
         return {
             'is_ok': play_resp.ok,
             'status_code': play_resp.status_code,
             'episodes_added': len(uris),
             'attempted': attempted,
             'added': added,
+            'response': 'Playback started' if play_resp.ok else f'Playback failed: {play_detail}',
+            'queue_playlist_synced': queue_synced,
         }

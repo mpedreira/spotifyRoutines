@@ -213,6 +213,38 @@ class TestBuildAndPlayQueueWithEpisodes:
         assert result['added'] == ['Music Mix']
         api.config.set_spotify_queue.assert_called_once_with(['spotify:track:1', 'spotify:track:2'])
 
+    def test_play_failure_syncs_queue_playlist_for_manual_play(self):
+        mock_resp = MagicMock()
+        mock_resp.ok = False
+        mock_resp.status_code = 404
+        mock_resp.json.return_value = {'error': {'message': 'Player command failed: No active device found'}}
+
+        api = _make_api(sources=[
+            {'type': 'podcast', 'id': 'pod1', 'name': 'Pod', 'window_hours': 24, 'days': None, 'active': True}
+        ])
+        with patch.object(api, '_refresh_token'), \
+                patch.object(api, '_get_episode_uri', return_value='spotify:episode:xyz'), \
+                patch.object(api, '_play', return_value=mock_resp), \
+                patch.object(api, '_sync_queue_playlist', return_value=True) as mock_sync:
+            result = api.build_and_play_queue(play=True)
+
+        assert result['is_ok'] is False
+        assert result['status_code'] == 404
+        assert 'Playback failed' in result['response']
+        assert result['queue_playlist_synced'] is True
+        mock_sync.assert_called_once_with('pl1', ['spotify:episode:xyz'])
+
+
+class TestTokenRefreshFailures:
+    def test_returns_meaningful_response_when_refresh_fails(self):
+        api = _make_api(sources=[])
+        with patch.object(api, '_refresh_token', side_effect=ValueError('invalid_grant')):
+            result = api.build_and_play_queue(play=True)
+
+        assert result['is_ok'] is False
+        assert result['episodes_added'] == 0
+        assert 'Token refresh failed' in result['response']
+
 
 class TestPlaylistUris:
     def test_get_playlist_track_uris_reads_paginated_results(self):
