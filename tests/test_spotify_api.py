@@ -213,11 +213,11 @@ class TestBuildAndPlayQueueWithEpisodes:
         assert result['added'] == ['Music Mix']
         api.config.set_spotify_queue.assert_called_once_with(['spotify:track:1', 'spotify:track:2'])
 
-    def test_play_failure_syncs_queue_playlist_for_manual_play(self):
+    def test_device_offline_returns_ok_with_offline_flag(self):
         mock_resp = MagicMock()
         mock_resp.ok = False
         mock_resp.status_code = 404
-        mock_resp.json.return_value = {'error': {'message': 'Player command failed: No active device found'}}
+        mock_resp.json.return_value = {'error': {'message': 'Device not found'}}
 
         api = _make_api(sources=[
             {'type': 'podcast', 'id': 'pod1', 'name': 'Pod', 'window_hours': 24, 'days': None, 'active': True}
@@ -228,11 +228,29 @@ class TestBuildAndPlayQueueWithEpisodes:
                 patch.object(api, '_sync_queue_playlist', return_value=True) as mock_sync:
             result = api.build_and_play_queue(play=True)
 
-        assert result['is_ok'] is False
-        assert result['status_code'] == 404
-        assert 'Playback failed' in result['response']
-        assert result['queue_playlist_synced'] is True
+        assert result['is_ok'] is True
+        assert result['device_offline'] is True
+        assert 'Device offline' in result['response']
+        assert result['episodes_added'] == 1
         mock_sync.assert_called_once_with('pl1', ['spotify:episode:xyz'])
+
+    def test_non_device_404_returns_failure(self):
+        mock_resp = MagicMock()
+        mock_resp.ok = False
+        mock_resp.status_code = 404
+        mock_resp.json.return_value = {'error': {'message': 'Playlist not found'}}
+
+        api = _make_api(sources=[
+            {'type': 'podcast', 'id': 'pod1', 'name': 'Pod', 'window_hours': 24, 'days': None, 'active': True}
+        ])
+        with patch.object(api, '_refresh_token'), \
+                patch.object(api, '_get_episode_uri', return_value='spotify:episode:xyz'), \
+                patch.object(api, '_play', return_value=mock_resp), \
+                patch.object(api, '_sync_queue_playlist', return_value=False):
+            result = api.build_and_play_queue(play=True)
+
+        assert result['is_ok'] is False
+        assert result.get('device_offline') is not True
 
 
 class TestTokenRefreshFailures:

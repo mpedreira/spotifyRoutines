@@ -296,12 +296,33 @@ class SpotifyAPI(Spotify):
         else:
             play_detail = self._response_detail(play_resp) if not play_resp.ok else ''
 
+        # Detect device-offline scenarios: fall back to offline mode (queue ready, no play).
+        device_offline = (
+            play_resp is None
+            or play_resp.status_code in (404, 403)
+            and 'device' in play_detail.lower()
+        )
+
         queue_synced = None
         if (play_resp is None or not play_resp.ok) and queue_playlist_id:
             try:
                 queue_synced = self._sync_queue_playlist(queue_playlist_id, uris)
             except _req.RequestException:
                 queue_synced = False
+
+        if device_offline:
+            return {
+                'is_ok': True,
+                'episodes_added': len(uris),
+                'attempted': attempted,
+                'added': added,
+                'response': (
+                    'Device offline: queue built and saved. '
+                    'Open Spotify on the device and call play_music?play=true to play.'
+                ),
+                'queue_playlist_synced': queue_synced,
+                'device_offline': True,
+            }
 
         if play_resp is None:
             return {
