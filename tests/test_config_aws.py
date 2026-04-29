@@ -206,3 +206,19 @@ class TestSetParameterSSM:
             (tmp_path / "config.ini").read_text(encoding="utf-8"))
         manuel = [user for user in persisted['users'] if user['user'] == 'Manuel'][0]
         assert manuel['spotify_queue_uris'] == uris
+
+
+class TestSsmAvailableEnvOverrides:
+    def test_returns_false_when_not_lambda_even_if_enabled(self):
+        with patch('app.classes.adapters.config_aws.os.path.exists', return_value=False):
+            assert config_module._ssm_available() is False
+
+    def test_returns_false_when_lambda_and_env_disables_ssm(self):
+        with patch('app.classes.adapters.config_aws.os.path.exists', return_value=True), \
+                patch.dict('app.classes.adapters.config_aws.os.environ', {'SPOTIFY_USE_SSM': 'false'}, clear=False):
+            assert config_module._ssm_available() is False
+
+    def test_returns_true_when_lambda_and_env_enables_ssm(self):
+        with patch('app.classes.adapters.config_aws.os.path.exists', return_value=True), \
+                patch.dict('app.classes.adapters.config_aws.os.environ', {'SPOTIFY_USE_SSM': 'true'}, clear=False):
+            assert config_module._ssm_available() is True

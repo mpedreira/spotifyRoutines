@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from time import sleep
 from zoneinfo import ZoneInfo
 import random
+import os
 import requests as _req
 import urllib3
 from app.classes.spotify import Spotify
@@ -17,6 +18,31 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 _TOKEN_URL = "https://accounts.spotify.com/api/token"
 _API_BASE = "https://api.spotify.com/v1"
 _DATE_FORMATS = {'day': '%Y-%m-%d', 'month': '%Y-%m', 'year': '%Y'}
+
+
+def _parse_env_bool(env_var_name, default=True):
+    """Parse an environment variable as bool with safe fallback."""
+    raw = os.environ.get(env_var_name)
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if value in {'0', 'false', 'no', 'off'}:
+        return False
+    if value in {'1', 'true', 'yes', 'on'}:
+        return True
+    return default
+
+
+def _parse_env_float(env_var_name, default, min_value=0.0):
+    """Parse an environment variable as float with clamped minimum."""
+    raw = os.environ.get(env_var_name)
+    if raw is None:
+        return default
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    return max(min_value, value)
 
 
 class SpotifyAPI(Spotify):
@@ -31,6 +57,26 @@ class SpotifyAPI(Spotify):
         """
         super().__init__(config)
         self._access_token = None
+        self._http_timeout = _parse_env_float(
+            'SPOTIFY_HTTP_TIMEOUT_SECONDS', default=10.0, min_value=0.0)
+        self._transfer_wait = _parse_env_float(
+            'SPOTIFY_TRANSFER_WAIT_SECONDS', default=3.0, min_value=0.0)
+        self._device_retry_wait = _parse_env_float(
+            'SPOTIFY_DEVICE_RETRY_WAIT_SECONDS', default=4.0, min_value=0.0)
+        self._transient_retry_wait = _parse_env_float(
+            'SPOTIFY_TRANSIENT_RETRY_WAIT_SECONDS', default=0.5, min_value=0.0)
+        self._device_retry_enabled = _parse_env_bool(
+            'SPOTIFY_DEVICE_RETRY_ENABLED', default=True)
+
+    def _play_request(self, uris, device_id):
+        """Issue the Spotify /me/player/play call for the given URIs."""
+        return _req.put(
+            f"{_API_BASE}/me/player/play",
+            headers=self._headers(json_content=True),
+            params={'device_id': device_id},
+            json={'uris': uris},
+            verify=False, timeout=self._http_timeout
+        )
 
     def _refresh_token(self):
         """Exchange refresh_token for a fresh access_token."""
@@ -39,7 +85,7 @@ class SpotifyAPI(Spotify):
             'refresh_token': self.config.spotify['refresh_token'],
             'client_id': self.config.spotify['client_id'],
             'client_secret': self.config.spotify['client_secret'],
-        }, verify=False, timeout=10)
+        }, verify=False, timeout=self._http_timeout)
         payload = resp.json() if resp.content else {}
         self._access_token = payload.get('access_token')
         if not self._access_token:
@@ -97,7 +143,7 @@ class SpotifyAPI(Spotify):
             f"{_API_BASE}/shows/{show_id}/episodes",
             headers=self._headers(),
             params={'market': 'ES', 'limit': 10},
-            verify=False, timeout=10
+            verify=False, timeout=self._http_timeout
         )
         cutoff = (
             datetime.now(timezone.utc) - timedelta(hours=window_hours)
@@ -123,7 +169,7 @@ class SpotifyAPI(Spotify):
             f"{_API_BASE}/playlists/{playlist_id}/tracks",
             headers=self._headers(json_content=True),
             json={'uris': []},
-            verify=False, timeout=10
+            verify=False, timeout=self._http_timeout
         )
 
     def _add_to_playlist(self, playlist_id, uris):
@@ -132,7 +178,7 @@ class SpotifyAPI(Spotify):
             f"{_API_BASE}/playlists/{playlist_id}/tracks",
             headers=self._headers(json_content=True),
             json={'uris': uris},
-            verify=False, timeout=10
+            verify=False, timeout=self._http_timeout
         )
         return resp.ok
 
@@ -155,7 +201,7 @@ class SpotifyAPI(Spotify):
                 f"{_API_BASE}/playlists/{playlist_id}/tracks",
                 headers=self._headers(),
                 params={'market': 'ES', 'limit': page_limit, 'offset': offset},
-                verify=False, timeout=10,
+                verify=False, timeout=self._http_timeout,
             )
             items = resp.json().get('items', [])
             if not items:
@@ -189,24 +235,29 @@ class SpotifyAPI(Spotify):
             f"{_API_BASE}/me/player",
             headers=self._headers(json_content=True),
             json={'device_ids': [device_id], 'play': True},
-            verify=False, timeout=10
+            verify=False, timeout=self._http_timeout
         )
         # After transfer, issue explicit play with the desired URIs
-        sleep(3)
-        play_resp = _req.put(
-            f"{_API_BASE}/me/player/play",
-            headers=self._headers(json_content=True),
-            params={'device_id': device_id},
-            json={'uris': uris},
-            verify=False, timeout=10
-        )
+        if self._transfer_wait > 0:
+            sleep(self._transfer_wait)
+        play_resp = self._play_request(uris, device_id)
 
-        # If device still not found, wait and retry once
-        if not play_resp.ok and play_resp.status_code == 404 and _retry:
+        # Retry once for device-not-found or transient Spotify/API gateway failures.
+        if self._device_retry_enabled and not play_resp.ok and _retry:
             detail = self._response_detail(play_resp).lower()
-            if 'device' in detail:
-                sleep(4)
-                return self._play(uris, device_id, _retry=False)
+            status_code = play_resp.status_code
+            should_retry = (
+                (status_code == 404 and 'device' in detail)
+                or status_code in {429, 500, 502, 503, 504}
+            )
+            if should_retry:
+                is_device_retry = status_code == 404 and 'device' in detail
+                retry_wait = self._device_retry_wait if is_device_retry else self._transient_retry_wait
+                if retry_wait > 0:
+                    sleep(retry_wait)
+                if is_device_retry:
+                    return self._play(uris, device_id, _retry=False)
+                return self._play_request(uris, device_id)
 
         return play_resp
 

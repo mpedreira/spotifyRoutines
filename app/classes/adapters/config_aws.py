@@ -44,9 +44,24 @@ def _get_ssm_client():
         return None
 
 
+def _parse_env_bool(env_var_name, default=True):
+    """Parse an environment variable as bool with safe fallback."""
+    raw = os.environ.get(env_var_name)
+    if raw is None:
+        return default
+    value = str(raw).strip().lower()
+    if value in {'0', 'false', 'no', 'off'}:
+        return False
+    if value in {'1', 'true', 'yes', 'on'}:
+        return True
+    return default
+
+
 def _ssm_available():
-    """Return True when running inside Lambda (SSM should be reachable)."""
-    return os.path.exists("/var/task")
+    """Return True when SSM is enabled and running inside Lambda."""
+    if not os.path.exists("/var/task"):
+        return False
+    return _parse_env_bool('SPOTIFY_USE_SSM', default=True)
 
 
 def _strip_comments(text):

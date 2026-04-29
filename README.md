@@ -137,6 +137,28 @@ Add this IAM policy to the Lambda execution role:
 
 All other config values are read from bundled `config/config.ini` unless `spotify_users_config` exists in SSM.
 
+### 4. Environment Variables (optional)
+
+You can tune Lambda behavior without code changes:
+
+- `SPOTIFY_USE_SSM` (default: `true` in Lambda): enable/disable SSM reads/writes.
+- `SPOTIFY_HTTP_TIMEOUT_SECONDS` (default: `10`): timeout for Spotify HTTP requests.
+- `SPOTIFY_TRANSFER_WAIT_SECONDS` (default: `3`): wait after transfer playback before explicit play.
+- `SPOTIFY_DEVICE_RETRY_ENABLED` (default: `true`): retry once when Spotify returns device-not-found.
+- `SPOTIFY_DEVICE_RETRY_WAIT_SECONDS` (default: `4`): wait before that retry.
+- `SPOTIFY_TRANSIENT_RETRY_WAIT_SECONDS` (default: `0.5`): wait before retry on transient errors (`429/500/502/503/504`).
+
+Recommended profile for "AWS parecido a local":
+
+```text
+SPOTIFY_USE_SSM=false
+SPOTIFY_TRANSFER_WAIT_SECONDS=0.5
+SPOTIFY_DEVICE_RETRY_WAIT_SECONDS=0.5
+SPOTIFY_DEVICE_RETRY_ENABLED=false
+SPOTIFY_TRANSIENT_RETRY_WAIT_SECONDS=0.2
+SPOTIFY_HTTP_TIMEOUT_SECONDS=5
+```
+
 ## Local development
 
 ```bash

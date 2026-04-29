@@ -283,6 +283,113 @@ class TestPlayRetry:
         assert result.ok is True
         assert call_count['n'] == 2
 
+    def test_play_retries_once_on_bad_gateway(self):
+        ok_resp = MagicMock()
+        ok_resp.ok = True
+        ok_resp.status_code = 204
+
+        fail_resp = MagicMock()
+        fail_resp.ok = False
+        fail_resp.status_code = 502
+        fail_resp.json.return_value = {'error': {'message': 'Bad gateway'}}
+        fail_resp.text = 'Bad gateway'
+
+        api = _make_api(sources=[])
+        api._access_token = 'fake'
+
+        call_count = {'n': 0}
+
+        def fake_put(url, **kwargs):
+            if '/me/player/play' in url:
+                call_count['n'] += 1
+                return fail_resp if call_count['n'] == 1 else ok_resp
+            return MagicMock(ok=True)
+
+        with patch('app.classes.adapters.spotify_api._req.put', side_effect=fake_put), \
+                patch('app.classes.adapters.spotify_api.sleep'):
+            result = api._play(['spotify:episode:x'], 'dev1')
+
+        assert result.ok is True
+        assert call_count['n'] == 2
+
+    def test_bad_gateway_retry_reuses_existing_transfer(self):
+        ok_resp = MagicMock()
+        ok_resp.ok = True
+        ok_resp.status_code = 204
+
+        fail_resp = MagicMock()
+        fail_resp.ok = False
+        fail_resp.status_code = 502
+        fail_resp.json.return_value = {'error': {'message': 'Bad gateway'}}
+        fail_resp.text = 'Bad gateway'
+
+        api = _make_api(sources=[])
+        api._access_token = 'fake'
+
+        calls = {'transfer': 0, 'play': 0}
+
+        def fake_put(url, **kwargs):
+            if '/me/player/play' in url:
+                calls['play'] += 1
+                return fail_resp if calls['play'] == 1 else ok_resp
+            if '/me/player' in url:
+                calls['transfer'] += 1
+                return MagicMock(ok=True)
+            return MagicMock(ok=True)
+
+        with patch('app.classes.adapters.spotify_api._req.put', side_effect=fake_put), \
+                patch('app.classes.adapters.spotify_api.sleep'):
+            result = api._play(['spotify:episode:x'], 'dev1')
+
+        assert result.ok is True
+        assert calls['play'] == 2
+        assert calls['transfer'] == 1
+
+    def test_play_does_not_retry_when_retry_disabled_by_env(self):
+        fail_resp = MagicMock()
+        fail_resp.ok = False
+        fail_resp.status_code = 404
+        fail_resp.json.return_value = {'error': {'message': 'Device not found'}}
+        fail_resp.text = 'Device not found'
+
+        api = _make_api(sources=[])
+        api._access_token = 'fake'
+
+        call_count = {'n': 0}
+
+        def fake_put(url, **kwargs):
+            if '/me/player/play' in url:
+                call_count['n'] += 1
+                return fail_resp
+            return MagicMock(ok=True)
+
+        with patch.dict('app.classes.adapters.spotify_api.os.environ', {'SPOTIFY_DEVICE_RETRY_ENABLED': 'false'}, clear=False), \
+                patch('app.classes.adapters.spotify_api._req.put', side_effect=fake_put), \
+                patch('app.classes.adapters.spotify_api.sleep'):
+            api = _make_api(sources=[])
+            api._access_token = 'fake'
+            result = api._play(['spotify:episode:x'], 'dev1')
+
+        assert result.ok is False
+        assert result.status_code == 404
+        assert call_count['n'] == 1
+
+
+class TestEnvDrivenRuntimeConfig:
+    def test_init_reads_env_overrides(self):
+        with patch.dict('app.classes.adapters.spotify_api.os.environ', {
+            'SPOTIFY_HTTP_TIMEOUT_SECONDS': '5',
+            'SPOTIFY_TRANSFER_WAIT_SECONDS': '0.5',
+            'SPOTIFY_DEVICE_RETRY_WAIT_SECONDS': '0.5',
+            'SPOTIFY_DEVICE_RETRY_ENABLED': 'false',
+        }, clear=False):
+            api = _make_api(sources=[])
+
+        assert api._http_timeout == 5.0
+        assert api._transfer_wait == 0.5
+        assert api._device_retry_wait == 0.5
+        assert api._device_retry_enabled is False
+
 
 class TestTokenRefreshFailures:
     def test_returns_meaningful_response_when_refresh_fails(self):
