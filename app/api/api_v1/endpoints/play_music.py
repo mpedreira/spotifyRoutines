@@ -4,10 +4,28 @@ This file contains the endpoint to build and play the podcast queue via Spotify.
 # pylint: disable=E0401,R0801,E0611
 
 from fastapi import APIRouter, HTTPException
-from app.classes.adapters.config_aws import ConfigAWS
+from app.classes.adapters.config_aws import ConfigAWS, _ssm_available
 from app.classes.adapters.spotify_api import SpotifyAPI
 
 router = APIRouter()
+
+
+def _mask_value(raw_value):
+    """Mask sensitive values keeping only the first and last 2 chars."""
+    value = str(raw_value or "")
+    if len(value) <= 4:
+        return "*" * len(value)
+    return f"{value[:2]}***{value[-2:]}"
+
+
+def _source_labels(sources):
+    """Return readable source labels for diagnostics."""
+    labels = []
+    for source in sources or []:
+        if not isinstance(source, dict):
+            continue
+        labels.append(source.get('name') or source.get('id') or 'unknown')
+    return labels
 
 
 @router.post("")
@@ -43,3 +61,23 @@ def play_music_by_user(user: str, play: bool = True):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return SpotifyAPI(config_instance).build_and_play_queue(play=play)
+
+
+@router.get("/debug/config")
+def debug_effective_config(user: str | None = None):
+    """Return the effective runtime config used by this deployment."""
+    try:
+        config_instance = ConfigAWS(user=user) if user else ConfigAWS()
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    sources = config_instance.spotify.get('sources') or []
+    return {
+        'selected_user': config_instance.current_user,
+        'default_user': config_instance.default_user,
+        'ssm_enabled': _ssm_available(),
+        'sources_count': len(sources),
+        'sources': _source_labels(sources),
+        'device_id_masked': _mask_value(config_instance.spotify.get('device_id', '')),
+        'queue_playlist_id_masked': _mask_value(config_instance.spotify.get('queue_playlist_id', '')),
+    }
