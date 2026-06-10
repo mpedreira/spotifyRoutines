@@ -4,6 +4,7 @@
 from datetime import datetime, timezone
 import random
 from unittest.mock import MagicMock, patch
+import requests
 
 from app.classes.adapters.spotify_api import SpotifyAPI
 
@@ -252,6 +253,61 @@ class TestBuildAndPlayQueueWithEpisodes:
         assert result['is_ok'] is False
         assert result.get('device_offline') is not True
 
+    def test_scene_builds_queue_from_party_playlist(self):
+        mock_resp = MagicMock()
+        mock_resp.ok = True
+        mock_resp.status_code = 204
+        api = _make_api(sources=[])
+        api.config.spotify['party_scenes'] = [
+            {
+                'id': 'fiesta_casa',
+                'name': 'Fiesta en casa',
+                'playlist_id': 'scene_pl',
+                'device_id': 'scene_device',
+                'tracks_limit': 2,
+                'shuffle': False,
+                'active': True,
+            }
+        ]
+
+        with patch.object(api, '_refresh_token'), \
+                patch.object(api, '_get_playlist_track_uris', return_value=['spotify:track:1', 'spotify:track:2']), \
+            patch.object(api, '_play', return_value=mock_resp) as mock_play:
+            result = api.build_and_play_queue(play=True, scene='fiesta_casa')
+
+        assert result['is_ok'] is True
+        assert result['attempted'] == ['Fiesta en casa']
+        assert result['added'] == ['Fiesta en casa']
+        assert result['episodes_added'] == 2
+        mock_play.assert_called_once_with(['spotify:track:1', 'spotify:track:2'], 'scene_device')
+
+    def test_scene_not_found_returns_404_payload(self):
+        api = _make_api(sources=[])
+        api.config.spotify['party_scenes'] = []
+        with patch.object(api, '_refresh_token'):
+            result = api.build_and_play_queue(play=True, scene='missing_scene')
+
+        assert result['is_ok'] is False
+        assert result['status_code'] == 404
+        assert "not found" in result['response']
+
+    def test_scene_inactive_returns_400_payload(self):
+        api = _make_api(sources=[])
+        api.config.spotify['party_scenes'] = [
+            {
+                'id': 'fiesta_casa',
+                'name': 'Fiesta en casa',
+                'playlist_id': 'scene_pl',
+                'active': False,
+            }
+        ]
+        with patch.object(api, '_refresh_token'):
+            result = api.build_and_play_queue(play=True, scene='fiesta_casa')
+
+        assert result['is_ok'] is False
+        assert result['status_code'] == 400
+        assert "inactive" in result['response']
+
 
 class TestPlayRetry:
     def test_play_retries_once_on_device_not_found(self):
@@ -431,3 +487,42 @@ class TestPlaylistUris:
             uris = api._get_playlist_track_uris('pl1', tracks_limit=2)
 
         assert uris == ['spotify:track:t1', 'spotify:track:t2']
+
+
+class TestListAvailableDevices:
+    def test_list_available_devices_success(self):
+        api = _make_api(sources=[])
+        resp = MagicMock()
+        resp.ok = True
+        resp.status_code = 200
+        resp.content = b'{}'
+        resp.json.return_value = {
+            'devices': [
+                {'id': 'dev1', 'name': 'Speaker'}
+            ]
+        }
+
+        with patch.object(api, '_refresh_token'), \
+                patch('app.classes.adapters.spotify_api._req.get', return_value=resp):
+            result = api.list_available_devices()
+
+        assert result['is_ok'] is True
+        assert result['status_code'] == 200
+        assert len(result['devices']) == 1
+
+    def test_list_available_devices_handles_token_refresh_error(self):
+        api = _make_api(sources=[])
+        with patch.object(api, '_refresh_token', side_effect=ValueError('invalid_grant')):
+            result = api.list_available_devices()
+
+        assert result['is_ok'] is False
+        assert result['status_code'] == 401
+
+    def test_list_available_devices_handles_request_error(self):
+        api = _make_api(sources=[])
+        with patch.object(api, '_refresh_token'), \
+                patch('app.classes.adapters.spotify_api._req.get', side_effect=requests.RequestException('network down')):
+            result = api.list_available_devices()
+
+        assert result['is_ok'] is False
+        assert result['status_code'] == 503

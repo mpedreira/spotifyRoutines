@@ -12,9 +12,18 @@ Uses `default_user` from config.
 
 Uses the given user configuration.
 
+### `GET /api/v1/play_music/devices`
+
+Lists available Spotify Connect devices for `default_user`.
+
+### `GET /api/v1/play_music/devices/{user}`
+
+Lists available Spotify Connect devices for the given user profile.
+
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `play` | `true` | Start playback immediately on the configured device |
+| `scene` | `null` | Optional scene id from `party_scenes` to play a predefined playlist |
 
 If `user` does not exist in config, API returns `404`.
 
@@ -39,6 +48,7 @@ cp config/config.example.ini config/config.ini
       "spotify_refresh_token": "...",
       "spotify_device_id": "...",
       "spotify_queue_playlist_id": "...",
+      "party_scenes": [],
       "sources": [],
       "spotify_queue_uris": []
     }
@@ -48,6 +58,27 @@ cp config/config.example.ini config/config.ini
 
 - `default_user`: mandatory, used by `POST /api/v1/play_music`.
 - `users`: list of user objects. Each user needs a unique `user` value.
+
+### Party scenes
+
+Use `party_scenes` when you want a dedicated Home Assistant scene that always pulls tracks from the same playlist.
+
+```json
+{
+  "id": "fiesta_casa",
+  "name": "Fiesta en casa",
+  "playlist_id": "<spotify_playlist_id>",
+  "device_id": "<optional_spotify_device_id_override>",
+  "tracks_limit": 60,
+  "shuffle": true,
+  "active": true
+}
+```
+
+- Call `POST /api/v1/play_music/{user}?play=true&scene=fiesta_casa` to force this scene.
+- If `scene` is omitted, normal `sources` processing is used.
+- `device_id` is optional in a scene. When present, playback uses that device instead of the user-level `spotify_device_id`.
+- Recommended setup: keep your normal profile (e.g. car) and create a separate `Party` user profile for home scenes.
 
 ### Source object
 
@@ -167,3 +198,31 @@ pytest tests/
 ```
 
 SSM is not used locally — all reads/writes go directly to `config/config.ini`.
+
+## Device discovery
+
+Use these endpoints to find the right `spotify_device_id` for Alexa groups or speakers:
+
+- `GET /api/v1/play_music/devices`
+- `GET /api/v1/play_music/devices/{user}`
+
+Choose the target group (for example `En toda la casa`) and copy that id to the user config.
+
+## Home Assistant example
+
+Use a `rest_command` + `script` pair to trigger the party scene:
+
+```yaml
+rest_command:
+  spotify_fiesta_mireia:
+    url: "https://<tu-api-gateway>/api/v1/play_music/Mireia?play=true&scene=fiesta_casa"
+    method: POST
+
+script:
+  spotify_fiesta_casa:
+    alias: Spotify Fiesta Casa
+    sequence:
+      - service: rest_command.spotify_fiesta_mireia
+```
+
+Then attach `script.spotify_fiesta_casa` to an automation, dashboard button, or voice command.

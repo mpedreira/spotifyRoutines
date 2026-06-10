@@ -158,6 +158,26 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
         return item
 
     @classmethod
+    def _normalize_party_scene(cls, scene):
+        """Normalize party scene entries used for explicit scene playback."""
+        if not isinstance(scene, dict):
+            return None
+        item = dict(scene)
+        item['id'] = str(item.get('id') or '').strip()
+        if not item['id']:
+            return None
+        item['name'] = item.get('name') or item['id']
+        item['playlist_id'] = str(item.get('playlist_id') or '').strip()
+        if not item['playlist_id']:
+            return None
+        raw_device_id = str(item.get('device_id') or '').strip()
+        item['device_id'] = raw_device_id or None
+        item['active'] = item.get('active', True)
+        item.setdefault('tracks_limit', None)
+        item.setdefault('shuffle', False)
+        return item
+
+    @classmethod
     def _normalize_user_entry(cls, raw_user):
         """Normalize one user record to the internal schema."""
         if not isinstance(raw_user, dict):
@@ -196,6 +216,14 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
         if not isinstance(queue_uris, list):
             queue_uris = []
 
+        scenes_raw = cls._parse_json_string(raw_user.get('party_scenes', []), [])
+        scenes = []
+        if isinstance(scenes_raw, list):
+            for scene in scenes_raw:
+                normalized_scene = cls._normalize_party_scene(scene)
+                if normalized_scene:
+                    scenes.append(normalized_scene)
+
         return {
             'user': user_name,
             'spotify_client_id': raw_user.get('spotify_client_id', ''),
@@ -204,6 +232,7 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
             'spotify_device_id': raw_user.get('spotify_device_id', ''),
             'spotify_queue_playlist_id': raw_user.get('spotify_queue_playlist_id', ''),
             'sources': sources,
+            'party_scenes': scenes,
             'spotify_queue_uris': queue_uris,
         }
 
@@ -264,6 +293,7 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
             'queue_playlist_id': user_data.get('spotify_queue_playlist_id', ''),
             'podcasts': podcasts,
             'sources': user_data.get('sources', []),
+            'party_scenes': user_data.get('party_scenes', []),
             'queue_uris': user_data.get('spotify_queue_uris', []),
         }
 

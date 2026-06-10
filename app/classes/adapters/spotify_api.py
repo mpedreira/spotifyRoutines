@@ -224,6 +224,55 @@ class SpotifyAPI(Spotify):
 
         return uris
 
+    def _find_party_scene(self, scene_id):
+        """Return normalized party scene config by id, or None when not found."""
+        target = str(scene_id or '').strip().lower()
+        if not target:
+            return None
+        for scene in self.config.spotify.get('party_scenes', []):
+            if not isinstance(scene, dict):
+                continue
+            if str(scene.get('id', '')).strip().lower() == target:
+                return scene
+        return None
+
+    def list_available_devices(self):
+        """List available Spotify Connect devices for current account."""
+        try:
+            self._refresh_token()
+        except (ValueError, _req.RequestException) as exc:
+            return {
+                'is_ok': False,
+                'status_code': 401,
+                'devices': [],
+                'response': f'Token refresh failed: {exc}',
+            }
+
+        try:
+            resp = _req.get(
+                f"{_API_BASE}/me/player/devices",
+                headers=self._headers(),
+                verify=False,
+                timeout=self._http_timeout,
+            )
+        except _req.RequestException as exc:
+            return {
+                'is_ok': False,
+                'status_code': 503,
+                'devices': [],
+                'response': f'Device query failed: {exc}',
+            }
+
+        payload = resp.json() if resp.content else {}
+        devices = payload.get('devices', []) if isinstance(payload, dict) else []
+        return {
+            'is_ok': resp.ok,
+            'status_code': resp.status_code,
+            'devices': devices,
+            'selected_device_id': self.config.spotify.get('device_id', ''),
+            'response': 'Devices loaded' if resp.ok else f'Device query failed: {self._response_detail(resp)}',
+        }
+
     def _play(self, uris, device_id, _retry=True):
         """Transfer playback to device and start playing the given episode URIs.
 
@@ -261,7 +310,7 @@ class SpotifyAPI(Spotify):
 
         return play_resp
 
-    def build_and_play_queue(self, play=True):
+    def build_and_play_queue(self, play=True, scene=None):
         """
             Fetches new/unplayed episodes from configured podcasts
             and stores them. Optionally starts playback on the device.
@@ -298,38 +347,70 @@ class SpotifyAPI(Spotify):
         uris = []
         attempted = []
         added = []
-        for source in sources:
-            if not source.get('active', True):
-                continue
 
-            source_type = str(source.get('type', 'podcast')).lower()
-            source_id = source.get('id')
-            if not source_id:
-                continue
+        if scene:
+            party_scene = self._find_party_scene(scene)
+            if not party_scene:
+                return {
+                    'is_ok': False,
+                    'status_code': 404,
+                    'episodes_added': 0,
+                    'response': f"Scene '{scene}' not found",
+                }
+            if not party_scene.get('active', True):
+                return {
+                    'is_ok': False,
+                    'status_code': 400,
+                    'episodes_added': 0,
+                    'response': f"Scene '{scene}' is inactive",
+                }
 
-            days = source.get('days')
-            if days is not None and today not in days:
-                continue
-
-            label = source.get('name') or source_id
+            label = party_scene.get('name') or party_scene['id']
             attempted.append(label)
-
-            if source_type == 'playlist':
-                playlist_uris = self._get_playlist_track_uris(
-                    source_id,
-                    tracks_limit=source.get('tracks_limit'),
-                )
-                if source.get('shuffle', False):
-                    random.shuffle(playlist_uris)
-                if playlist_uris:
-                    uris.extend(playlist_uris)
-                    added.append(label)
-                continue
-
-            uri = self._get_episode_uri(source_id, source.get('window_hours'))
-            if uri:
-                uris.append(uri)
+            if party_scene.get('device_id'):
+                device_id = party_scene['device_id']
+            playlist_uris = self._get_playlist_track_uris(
+                party_scene['playlist_id'],
+                tracks_limit=party_scene.get('tracks_limit'),
+            )
+            if party_scene.get('shuffle', False):
+                random.shuffle(playlist_uris)
+            if playlist_uris:
+                uris.extend(playlist_uris)
                 added.append(label)
+        else:
+            for source in sources:
+                if not source.get('active', True):
+                    continue
+
+                source_type = str(source.get('type', 'podcast')).lower()
+                source_id = source.get('id')
+                if not source_id:
+                    continue
+
+                days = source.get('days')
+                if days is not None and today not in days:
+                    continue
+
+                label = source.get('name') or source_id
+                attempted.append(label)
+
+                if source_type == 'playlist':
+                    playlist_uris = self._get_playlist_track_uris(
+                        source_id,
+                        tracks_limit=source.get('tracks_limit'),
+                    )
+                    if source.get('shuffle', False):
+                        random.shuffle(playlist_uris)
+                    if playlist_uris:
+                        uris.extend(playlist_uris)
+                        added.append(label)
+                    continue
+
+                uri = self._get_episode_uri(source_id, source.get('window_hours'))
+                if uri:
+                    uris.append(uri)
+                    added.append(label)
 
         if not uris:
             return {

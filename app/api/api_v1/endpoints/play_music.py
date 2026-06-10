@@ -29,7 +29,7 @@ def _source_labels(sources):
 
 
 @router.post("")
-def play_music(play: bool = True):
+def play_music(play: bool = True, scene: str | None = None):
     """
         Clears the queue playlist and refills it with new/unplayed podcast
         episodes based on the configured shows and time windows.
@@ -50,17 +50,37 @@ def play_music(play: bool = True):
         config_instance = ConfigAWS()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return SpotifyAPI(config_instance).build_and_play_queue(play=play)
+    return SpotifyAPI(config_instance).build_and_play_queue(play=play, scene=scene)
 
 
 @router.post("/{user}")
-def play_music_by_user(user: str, play: bool = True):
+def play_music_by_user(user: str, play: bool = True, scene: str | None = None):
     """Build and optionally play queue for the provided user profile."""
     try:
         config_instance = ConfigAWS(user=user)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return SpotifyAPI(config_instance).build_and_play_queue(play=play)
+    return SpotifyAPI(config_instance).build_and_play_queue(play=play, scene=scene)
+
+
+@router.get("/devices")
+def list_devices():
+    """List available Spotify Connect devices for default user."""
+    try:
+        config_instance = ConfigAWS()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return SpotifyAPI(config_instance).list_available_devices()
+
+
+@router.get("/devices/{user}")
+def list_devices_by_user(user: str):
+    """List available Spotify Connect devices for a specific user profile."""
+    try:
+        config_instance = ConfigAWS(user=user)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return SpotifyAPI(config_instance).list_available_devices()
 
 
 @router.get("/debug/config")

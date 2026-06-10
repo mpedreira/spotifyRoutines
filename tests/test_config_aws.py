@@ -17,6 +17,17 @@ _MULTIUSER_CONFIG = {
             "spotify_refresh_token": "refresh_xyz",
             "spotify_device_id": "device_111",
             "spotify_queue_playlist_id": "playlist_222",
+            "party_scenes": [
+                {
+                    "id": "fiesta_casa",
+                    "name": "Fiesta en casa",
+                    "playlist_id": "pl_scene",
+                    "device_id": "dev_scene",
+                    "tracks_limit": 60,
+                    "shuffle": True,
+                    "active": True,
+                }
+            ],
             "sources": [
                 {
                     "type": "podcast",
@@ -73,6 +84,8 @@ class TestConfigAWSInit:
         assert config.spotify['refresh_token'] == 'refresh_xyz'
         assert config.spotify['device_id'] == 'device_111'
         assert config.spotify['queue_playlist_id'] == 'playlist_222'
+        assert config.spotify['party_scenes'][0]['id'] == 'fiesta_casa'
+        assert config.spotify['party_scenes'][0]['device_id'] == 'dev_scene'
         assert config.spotify['podcasts'][0]['name'] == 'Test Pod'
         assert config.spotify['queue_uris'] == ['spotify:episode:aaa', 'spotify:episode:bbb']
 
@@ -117,6 +130,18 @@ class TestConfigAWSInit:
 
         assert isinstance(config.spotify['podcasts'], list)
         assert config.spotify['podcasts'][0]['name'] == 'Test Pod'
+
+    def test_party_scenes_json_string_is_parsed(self, tmp_path):
+        data = dict(_MULTIUSER_CONFIG)
+        data['users'] = [dict(_MULTIUSER_CONFIG['users'][0])]
+        data['users'][0]['party_scenes'] = json.dumps(_MULTIUSER_CONFIG['users'][0]['party_scenes'])
+        cfg_path = _write_config(tmp_path, data=data)
+        with patch.object(config_module, 'CONFIGFILE', cfg_path), \
+                patch.object(config_module, '_ssm_available', return_value=False):
+            config = ConfigAWS()
+
+        assert isinstance(config.spotify['party_scenes'], list)
+        assert config.spotify['party_scenes'][0]['playlist_id'] == 'pl_scene'
 
 
 class TestSetSpotifyQueue:
