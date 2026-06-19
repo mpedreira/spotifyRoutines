@@ -78,6 +78,16 @@ class SpotifyAPI(Spotify):
             verify=False, timeout=self._http_timeout
         )
 
+    def _play_context_request(self, context_uri, device_id):
+        """Issue the Spotify /me/player/play call for a context URI (playlist/album)."""
+        return _req.put(
+            f"{_API_BASE}/me/player/play",
+            headers=self._headers(json_content=True),
+            params={'device_id': device_id},
+            json={'context_uri': context_uri},
+            verify=False, timeout=self._http_timeout
+        )
+
     def _refresh_token(self):
         """Exchange refresh_token for a fresh access_token."""
         resp = _req.post(_TOKEN_URL, data={
@@ -121,6 +131,19 @@ class SpotifyAPI(Spotify):
             headers['Content-Type'] = 'application/json'
         return headers
 
+    def _app_headers(self):
+        """Return auth headers using an app-level client_credentials token."""
+        token_resp = _req.post(_TOKEN_URL, data={
+            'grant_type': 'client_credentials',
+            'client_id': self.config.spotify['client_id'],
+            'client_secret': self.config.spotify['client_secret'],
+        }, verify=False, timeout=self._http_timeout)
+        payload = token_resp.json() if token_resp.content else {}
+        app_token = payload.get('access_token')
+        if not app_token:
+            raise ValueError('Unable to obtain app token for playlist fallback')
+        return {'Authorization': f'Bearer {app_token}'}
+
     @staticmethod
     def _parse_release_date(date_str, precision):
         """Parse a Spotify release_date string into a UTC-aware datetime."""
@@ -145,11 +168,23 @@ class SpotifyAPI(Spotify):
             params={'market': 'ES', 'limit': 10},
             verify=False, timeout=self._http_timeout
         )
+        if not resp.ok:
+            raise ValueError(
+                f"Show '{show_id}' episodes query failed: {resp.status_code} {self._response_detail(resp)}"
+            )
+
+        try:
+            payload = resp.json()
+        except ValueError as exc:
+            raise ValueError(
+                f"Show '{show_id}' episodes query returned non-JSON payload"
+            ) from exc
+
         cutoff = (
             datetime.now(timezone.utc) - timedelta(hours=window_hours)
             if window_hours is not None else None
         )
-        for episode in resp.json().get('items', []):
+        for episode in payload.get('items', []):
             if episode is None:
                 continue
             if episode.get('resume_point', {}).get('fully_played'):
@@ -188,6 +223,7 @@ class SpotifyAPI(Spotify):
         offset = 0
         limit = 50
         max_items = tracks_limit if isinstance(tracks_limit, int) and tracks_limit > 0 else None
+        app_headers = None
 
         while True:
             page_limit = limit
@@ -197,21 +233,40 @@ class SpotifyAPI(Spotify):
                     break
                 page_limit = min(limit, remaining)
 
+            request_params = {'limit': page_limit, 'offset': offset}
             resp = _req.get(
                 f"{_API_BASE}/playlists/{playlist_id}/tracks",
                 headers=self._headers(),
-                params={'market': 'ES', 'limit': page_limit, 'offset': offset},
+                params=request_params,
                 verify=False, timeout=self._http_timeout,
             )
+            if not resp.ok and resp.status_code in {401, 403}:
+                if app_headers is None:
+                    app_headers = self._app_headers()
+                resp = _req.get(
+                    f"{_API_BASE}/playlists/{playlist_id}/tracks",
+                    headers=app_headers,
+                    params=request_params,
+                    verify=False, timeout=self._http_timeout,
+                )
+            if not resp.ok:
+                raise ValueError(
+                    f"Playlist '{playlist_id}' query failed: {resp.status_code} {self._response_detail(resp)}"
+                )
             items = resp.json().get('items', [])
             if not items:
                 break
 
             for item in items:
                 track = (item or {}).get('track') or {}
-                track_id = track.get('id')
-                if track_id:
-                    uris.append(f"spotify:track:{track_id}")
+                track_uri = track.get('uri')
+                if track_uri:
+                    uris.append(track_uri)
+                else:
+                    track_id = track.get('id')
+                    track_type = track.get('type', 'track')
+                    if track_id:
+                        uris.append(f"spotify:{track_type}:{track_id}")
                 if max_items is not None and len(uris) >= max_items:
                     break
 
@@ -270,8 +325,38 @@ class SpotifyAPI(Spotify):
             'status_code': resp.status_code,
             'devices': devices,
             'selected_device_id': self.config.spotify.get('device_id', ''),
+            'selected_device_name': self.config.spotify.get('device_name', ''),
             'response': 'Devices loaded' if resp.ok else f'Device query failed: {self._response_detail(resp)}',
         }
+
+    def _resolve_device_id(self, device_name, fallback_device_id):
+        """Resolve device id by configured device name, with legacy id fallback."""
+        normalized_name = str(device_name or '').strip().lower()
+        if not normalized_name:
+            return fallback_device_id
+
+        resp = _req.get(
+            f"{_API_BASE}/me/player/devices",
+            headers=self._headers(),
+            verify=False,
+            timeout=self._http_timeout,
+        )
+        if not resp.ok:
+            raise ValueError(f"Device query failed: {self._response_detail(resp)}")
+
+        payload = resp.json() if resp.content else {}
+        devices = payload.get('devices', []) if isinstance(payload, dict) else []
+        matches = [
+            dev for dev in devices
+            if str((dev or {}).get('name', '')).strip().lower() == normalized_name
+        ]
+        if matches:
+            active_match = next((dev for dev in matches if dev.get('is_active')), matches[0])
+            return active_match.get('id') or fallback_device_id
+
+        raise ValueError(
+            f"Configured device_name '{device_name}' not found in available devices"
+        )
 
     def _play(self, uris, device_id, _retry=True):
         """Transfer playback to device and start playing the given episode URIs.
@@ -310,6 +395,36 @@ class SpotifyAPI(Spotify):
 
         return play_resp
 
+    def _play_context(self, context_uri, device_id, _retry=True):
+        """Transfer playback to device and start context playback (playlist/album)."""
+        _req.put(
+            f"{_API_BASE}/me/player",
+            headers=self._headers(json_content=True),
+            json={'device_ids': [device_id], 'play': True},
+            verify=False, timeout=self._http_timeout
+        )
+        if self._transfer_wait > 0:
+            sleep(self._transfer_wait)
+        play_resp = self._play_context_request(context_uri, device_id)
+
+        if self._device_retry_enabled and not play_resp.ok and _retry:
+            detail = self._response_detail(play_resp).lower()
+            status_code = play_resp.status_code
+            should_retry = (
+                (status_code == 404 and 'device' in detail)
+                or status_code in {429, 500, 502, 503, 504}
+            )
+            if should_retry:
+                is_device_retry = status_code == 404 and 'device' in detail
+                retry_wait = self._device_retry_wait if is_device_retry else self._transient_retry_wait
+                if retry_wait > 0:
+                    sleep(retry_wait)
+                if is_device_retry:
+                    return self._play_context(context_uri, device_id, _retry=False)
+                return self._play_context_request(context_uri, device_id)
+
+        return play_resp
+
     def build_and_play_queue(self, play=True, scene=None):
         """
             Fetches new/unplayed episodes from configured podcasts
@@ -322,12 +437,15 @@ class SpotifyAPI(Spotify):
         Returns:
             dict: Result with is_ok, status_code and episodes_added
         """
+        device_id = self.config.spotify.get('device_id', '')
+        device_name = self.config.spotify.get('device_name', '')
         try:
             self._refresh_token()
         except (ValueError, _req.RequestException) as exc:
             return {
                 'is_ok': False,
                 'episodes_added': 0,
+                'executed_device_id': device_id,
                 'response': f'Token refresh failed: {exc}',
             }
 
@@ -339,12 +457,11 @@ class SpotifyAPI(Spotify):
                 source['type'] = 'podcast'
                 source.setdefault('active', True)
                 sources.append(source)
-        device_id = self.config.spotify['device_id']
-
         today = datetime.now(ZoneInfo('Europe/Madrid')
                              ).weekday()  # 0=Mon … 6=Sun
 
         uris = []
+        context_uri = None
         attempted = []
         added = []
 
@@ -355,6 +472,7 @@ class SpotifyAPI(Spotify):
                     'is_ok': False,
                     'status_code': 404,
                     'episodes_added': 0,
+                    'executed_device_id': device_id,
                     'response': f"Scene '{scene}' not found",
                 }
             if not party_scene.get('active', True):
@@ -362,13 +480,18 @@ class SpotifyAPI(Spotify):
                     'is_ok': False,
                     'status_code': 400,
                     'episodes_added': 0,
+                    'executed_device_id': device_id,
                     'response': f"Scene '{scene}' is inactive",
                 }
 
             label = party_scene.get('name') or party_scene['id']
             attempted.append(label)
-            if party_scene.get('device_id'):
+            if party_scene.get('device_name'):
+                device_name = party_scene['device_name']
+                device_id = ''
+            elif party_scene.get('device_id'):
                 device_id = party_scene['device_id']
+                device_name = ''
             playlist_uris = self._get_playlist_track_uris(
                 party_scene['playlist_id'],
                 tracks_limit=party_scene.get('tracks_limit'),
@@ -396,10 +519,26 @@ class SpotifyAPI(Spotify):
                 attempted.append(label)
 
                 if source_type == 'playlist':
-                    playlist_uris = self._get_playlist_track_uris(
-                        source_id,
-                        tracks_limit=source.get('tracks_limit'),
-                    )
+                    try:
+                        playlist_uris = self._get_playlist_track_uris(
+                            source_id,
+                            tracks_limit=source.get('tracks_limit'),
+                        )
+                    except ValueError as exc:
+                        if '403' in str(exc):
+                            context_uri = f"spotify:playlist:{source_id}"
+                            added.append(label)
+                            break
+                        return {
+                            'is_ok': False,
+                            'status_code': 400,
+                            'episodes_added': len(uris),
+                            'executed_device_id': device_id,
+                            'executed_device_name': device_name,
+                            'attempted': attempted,
+                            'added': added,
+                            'response': str(exc),
+                        }
                     if source.get('shuffle', False):
                         random.shuffle(playlist_uris)
                     if playlist_uris:
@@ -407,15 +546,82 @@ class SpotifyAPI(Spotify):
                         added.append(label)
                     continue
 
-                uri = self._get_episode_uri(source_id, source.get('window_hours'))
+                try:
+                    uri = self._get_episode_uri(source_id, source.get('window_hours'))
+                except ValueError as exc:
+                    return {
+                        'is_ok': False,
+                        'status_code': 400,
+                        'episodes_added': len(uris),
+                        'executed_device_id': device_id,
+                        'executed_device_name': device_name,
+                        'attempted': attempted,
+                        'added': added,
+                        'response': str(exc),
+                    }
+
                 if uri:
                     uris.append(uri)
                     added.append(label)
 
         if not uris:
+            if context_uri:
+                if not play:
+                    return {
+                        'is_ok': True,
+                        'episodes_added': 0,
+                        'executed_device_id': device_id,
+                        'executed_device_name': device_name,
+                        'attempted': attempted,
+                        'added': added,
+                        'response': 'Playlist selected for direct playback. Call with play=true to start.',
+                        'context_uri': context_uri,
+                    }
+                try:
+                    device_id = self._resolve_device_id(device_name, device_id)
+                except ValueError as exc:
+                    return {
+                        'is_ok': False,
+                        'status_code': 400,
+                        'episodes_added': 0,
+                        'executed_device_id': device_id,
+                        'executed_device_name': device_name,
+                        'attempted': attempted,
+                        'added': added,
+                        'response': str(exc),
+                    }
+
+                try:
+                    play_resp = self._play_context(context_uri, device_id)
+                except _req.RequestException as exc:
+                    return {
+                        'is_ok': False,
+                        'status_code': 503,
+                        'episodes_added': 0,
+                        'executed_device_id': device_id,
+                        'executed_device_name': device_name,
+                        'attempted': attempted,
+                        'added': added,
+                        'response': f'Playback request failed: {exc}',
+                        'context_uri': context_uri,
+                    }
+
+                play_detail = self._response_detail(play_resp) if not play_resp.ok else ''
+                return {
+                    'is_ok': play_resp.ok,
+                    'status_code': play_resp.status_code,
+                    'episodes_added': 0,
+                    'executed_device_id': device_id,
+                    'executed_device_name': device_name,
+                    'attempted': attempted,
+                    'added': added,
+                    'response': 'Playback started (playlist context)' if play_resp.ok else f'Playback failed: {play_detail}',
+                    'context_uri': context_uri,
+                }
             return {
                 'is_ok': False,
                 'episodes_added': 0,
+                'executed_device_id': device_id,
                 'attempted': attempted,
                 'added': added,
                 'response': 'No new unplayed episodes found',
@@ -429,9 +635,25 @@ class SpotifyAPI(Spotify):
             return {
                 'is_ok': True,
                 'episodes_added': len(uris),
+                'executed_device_id': device_id,
+                'executed_device_name': device_name,
                 'attempted': attempted,
                 'added': added,
                 'response': 'Queue built and saved. Call play_music?play=true to play.',
+            }
+
+        try:
+            device_id = self._resolve_device_id(device_name, device_id)
+        except ValueError as exc:
+            return {
+                'is_ok': False,
+                'status_code': 400,
+                'episodes_added': len(uris),
+                'executed_device_id': device_id,
+                'executed_device_name': device_name,
+                'attempted': attempted,
+                'added': added,
+                'response': str(exc),
             }
 
         try:
@@ -460,6 +682,8 @@ class SpotifyAPI(Spotify):
             return {
                 'is_ok': True,
                 'episodes_added': len(uris),
+                'executed_device_id': device_id,
+                'executed_device_name': device_name,
                 'attempted': attempted,
                 'added': added,
                 'response': (
@@ -475,6 +699,8 @@ class SpotifyAPI(Spotify):
                 'is_ok': False,
                 'status_code': 503,
                 'episodes_added': len(uris),
+                'executed_device_id': device_id,
+                'executed_device_name': device_name,
                 'attempted': attempted,
                 'added': added,
                 'response': f'Playback request failed: {play_detail}',
@@ -485,6 +711,8 @@ class SpotifyAPI(Spotify):
             'is_ok': play_resp.ok,
             'status_code': play_resp.status_code,
             'episodes_added': len(uris),
+            'executed_device_id': device_id,
+            'executed_device_name': device_name,
             'attempted': attempted,
             'added': added,
             'response': 'Playback started' if play_resp.ok else f'Playback failed: {play_detail}',

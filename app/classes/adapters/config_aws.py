@@ -172,6 +172,8 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
             return None
         raw_device_id = str(item.get('device_id') or '').strip()
         item['device_id'] = raw_device_id or None
+        raw_device_name = str(item.get('device_name') or '').strip()
+        item['device_name'] = raw_device_name or None
         item['active'] = item.get('active', True)
         item.setdefault('tracks_limit', None)
         item.setdefault('shuffle', False)
@@ -230,6 +232,7 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
             'spotify_client_secret': raw_user.get('spotify_client_secret', ''),
             'spotify_refresh_token': raw_user.get('spotify_refresh_token', ''),
             'spotify_device_id': raw_user.get('spotify_device_id', ''),
+            'spotify_device_name': raw_user.get('spotify_device_name', ''),
             'spotify_queue_playlist_id': raw_user.get('spotify_queue_playlist_id', ''),
             'sources': sources,
             'party_scenes': scenes,
@@ -269,6 +272,7 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
             'spotify_client_secret': raw_config.get('spotify_client_secret', ''),
             'spotify_refresh_token': raw_config.get('spotify_refresh_token', ''),
             'spotify_device_id': raw_config.get('spotify_device_id', ''),
+            'spotify_device_name': raw_config.get('spotify_device_name', ''),
             'spotify_queue_playlist_id': raw_config.get('spotify_queue_playlist_id', ''),
             'spotify_podcasts': raw_config.get('spotify_podcasts', []),
             'spotify_queue_uris': raw_config.get('spotify_queue_uris', []),
@@ -290,6 +294,7 @@ class ConfigAWS (Config):  # pylint: disable=too-many-instance-attributes
             'client_secret': user_data.get('spotify_client_secret', ''),
             'refresh_token': user_data.get('spotify_refresh_token', ''),
             'device_id': user_data.get('spotify_device_id', ''),
+            'device_name': user_data.get('spotify_device_name', ''),
             'queue_playlist_id': user_data.get('spotify_queue_playlist_id', ''),
             'podcasts': podcasts,
             'sources': user_data.get('sources', []),

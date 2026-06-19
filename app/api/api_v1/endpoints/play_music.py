@@ -99,5 +99,6 @@ def debug_effective_config(user: str | None = None):
         'sources_count': len(sources),
         'sources': _source_labels(sources),
         'device_id_masked': _mask_value(config_instance.spotify.get('device_id', '')),
+        'device_name': config_instance.spotify.get('device_name', ''),
         'queue_playlist_id_masked': _mask_value(config_instance.spotify.get('queue_playlist_id', '')),
     }
