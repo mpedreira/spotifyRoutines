@@ -492,10 +492,28 @@ class SpotifyAPI(Spotify):
             elif party_scene.get('device_id'):
                 device_id = party_scene['device_id']
                 device_name = ''
-            playlist_uris = self._get_playlist_track_uris(
-                party_scene['playlist_id'],
-                tracks_limit=party_scene.get('tracks_limit'),
-            )
+            scene_playlist_id = party_scene['playlist_id']
+            try:
+                playlist_uris = self._get_playlist_track_uris(
+                    scene_playlist_id,
+                    tracks_limit=party_scene.get('tracks_limit'),
+                )
+            except ValueError as exc:
+                if '403' in str(exc):
+                    context_uri = f"spotify:playlist:{scene_playlist_id}"
+                    added.append(label)
+                    playlist_uris = []
+                else:
+                    return {
+                        'is_ok': False,
+                        'status_code': 400,
+                        'episodes_added': len(uris),
+                        'executed_device_id': device_id,
+                        'executed_device_name': device_name,
+                        'attempted': attempted,
+                        'added': added,
+                        'response': str(exc),
+                    }
             if party_scene.get('shuffle', False):
                 random.shuffle(playlist_uris)
             if playlist_uris:
